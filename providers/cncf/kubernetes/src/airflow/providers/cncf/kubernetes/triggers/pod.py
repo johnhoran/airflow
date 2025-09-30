@@ -89,7 +89,7 @@ class KubernetesPodTrigger(BaseTrigger):
         cluster_context: str | None = None,
         config_dict: dict | None = None,
         in_cluster: bool | None = None,
-        get_logs: bool = True,
+        container_logs: list[str] | None = None,
         startup_timeout: int = 120,
         startup_check_interval: int = 5,
         on_finish_action: str = "delete_pod",
@@ -107,7 +107,7 @@ class KubernetesPodTrigger(BaseTrigger):
         self.cluster_context = cluster_context
         self.config_dict = config_dict
         self.in_cluster = in_cluster
-        self.get_logs = get_logs
+        self.container_logs = container_logs or []
         self.startup_timeout = startup_timeout
         self.startup_check_interval = startup_check_interval
         self.last_log_time = last_log_time
@@ -130,7 +130,7 @@ class KubernetesPodTrigger(BaseTrigger):
                 "cluster_context": self.cluster_context,
                 "config_dict": self.config_dict,
                 "in_cluster": self.in_cluster,
-                "get_logs": self.get_logs,
+                "container_logs": self.container_logs,
                 "startup_timeout": self.startup_timeout,
                 "startup_check_interval": self.startup_check_interval,
                 "trigger_start_time": self.trigger_start_time,
@@ -144,8 +144,9 @@ class KubernetesPodTrigger(BaseTrigger):
     async def run(self) -> AsyncIterator[TriggerEvent]:
         """Get current pod status and yield a TriggerEvent."""
         self.log.info("Checking pod %r in namespace %r.", self.pod_name, self.pod_namespace)
+
         try:
-            state = await self._wait_for_pod_start()
+            state = await self._wait_for_pod_completion()
             if state == ContainerState.TERMINATED:
                 event = TriggerEvent(
                     {
@@ -166,10 +167,7 @@ class KubernetesPodTrigger(BaseTrigger):
                         **self.trigger_kwargs,
                     }
                 )
-            else:
-                event = await self._wait_for_container_completion()
             yield event
-            return
         except PodLaunchTimeoutException as e:
             message = self._format_exception_description(e)
             yield TriggerEvent(
@@ -195,6 +193,14 @@ class KubernetesPodTrigger(BaseTrigger):
             )
             return
 
+    async def tail_logs(self, container_name: str):
+        async for message in self.hook.tail_container_logs(
+            name=self.pod_name,
+            namespace=self.pod_namespace,
+            container=container_name,
+        ):
+            self.log.info("[%s] %s", container_name, message)
+
     def _format_exception_description(self, exc: Exception) -> Any:
         if isinstance(exc, PodLaunchTimeoutException):
             return exc.args[0]
@@ -209,17 +215,63 @@ class KubernetesPodTrigger(BaseTrigger):
 
     async def _wait_for_pod_start(self) -> ContainerState:
         """Loops until pod phase leaves ``PENDING`` If timeout is reached, throws error."""
-        while True:
-            pod = await self._get_pod()
-            if not pod.status.phase == "Pending":
-                return self.define_container_state(pod)
+        async for _, pod in self.hook.watch_pod(
+            name=self.pod_name, namespace=self.pod_namespace, timeout=self.startup_timeout
+        ):
+            container_state = self.define_container_state(pod)
 
-            delta = datetime.datetime.now(tz=datetime.timezone.utc) - self.trigger_start_time
-            if self.startup_timeout < delta.total_seconds():
-                raise PodLaunchTimeoutException("Pod did not leave 'Pending' phase within specified timeout")
+            if container_state in (ContainerState.TERMINATED, ContainerState.FAILED, ContainerState.RUNNING):
+                return container_state
 
-            self.log.info("Still waiting for pod to start. The pod state is %s", pod.status.phase)
-            await asyncio.sleep(self.startup_check_interval)
+        # Timeout reached without pod starting
+        raise PodLaunchTimeoutException("Pod did not leave 'Pending' phase within specified timeout")
+
+    async def _wait_for_pod_completion(self) -> ContainerState:
+        """Loops until pod phase leaves ``PENDING`` If timeout is reached, throws error."""
+        log_tasks: dict[str, asyncio.Task] = {}
+
+        try:
+            async with asyncio.timeout(self.startup_timeout) as deadline:
+                async for _, pod in self.hook.watch_pod(
+                    name=self.pod_name,
+                    namespace=self.pod_namespace,
+                ):
+                    pod = cast("V1Pod", pod)
+                    container_state = self.define_container_state(pod)
+
+                    if container_state == ContainerState.RUNNING:
+                        deadline.reschedule(None)
+
+                    if container_state in (ContainerState.TERMINATED, ContainerState.FAILED):
+                        return container_state
+
+                    for container in [
+                        *(pod.status.container_statuses or []),
+                        *(pod.status.init_container_statuses or []),
+                    ]:
+                        if (
+                            container
+                            and container.state
+                            and container.state.running
+                            and container.name
+                            and container.name in self.container_logs
+                            and container.name not in log_tasks
+                        ):
+                            log_task = asyncio.create_task(self.tail_logs(container_name=container.name))
+                            log_tasks[container.name] = log_task
+        except asyncio.TimeoutError:
+            raise PodLaunchTimeoutException("Pod did not leave 'Pending' phase within specified timeout")
+
+        finally:
+            for task in log_tasks.values():
+                task.cancel()
+            for task in log_tasks.values():
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+        return ContainerState.UNDEFINED
 
     async def _wait_for_container_completion(self) -> TriggerEvent:
         """

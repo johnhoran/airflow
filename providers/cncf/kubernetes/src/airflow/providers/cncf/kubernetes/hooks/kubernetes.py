@@ -20,7 +20,7 @@ import asyncio
 import contextlib
 import json
 import tempfile
-from collections.abc import Generator
+from collections.abc import AsyncIterator, Generator
 from functools import cached_property
 from time import sleep
 from typing import TYPE_CHECKING, Any
@@ -32,7 +32,7 @@ from asgiref.sync import sync_to_async
 from kubernetes import client, config, utils, watch
 from kubernetes.client.models import V1Deployment
 from kubernetes.config import ConfigException
-from kubernetes_asyncio import client as async_client, config as async_config
+from kubernetes_asyncio import client as async_client, config as async_config, watch as async_watch
 from urllib3.exceptions import HTTPError
 
 from airflow.exceptions import AirflowException, AirflowNotFoundException
@@ -856,6 +856,18 @@ class AsyncKubernetesHook(KubernetesHook):
             )
         return pod
 
+    async def watch_pod(self, name: str, namespace: str, timeout=None) -> AsyncIterator[tuple[Any, str]]:
+        async with self.get_conn() as connection:
+            v1_api = async_client.CoreV1Api(connection)
+            async with async_watch.Watch().stream(
+                v1_api.list_namespaced_pod,
+                namespace=namespace,
+                field_selector=f"metadata.name={name}",
+                **{"timeout_seconds": timeout} if timeout else {},
+            ) as stream:
+                async for event in stream:
+                    yield event["type"], event["object"]
+
     async def delete_pod(self, name: str, namespace: str):
         """
         Delete pod's object.
@@ -902,6 +914,28 @@ class AsyncKubernetesHook(KubernetesHook):
             except HTTPError:
                 self.log.exception("There was an error reading the kubernetes API.")
                 raise
+
+    async def tail_container_logs(
+        self,
+        name: str,
+        namespace: str,
+        container: str,
+    ) -> AsyncIterator[str]:
+        async with self.get_conn() as connection:
+            v1_api = async_client.CoreV1Api(connection)
+
+            resp = await v1_api.read_namespaced_pod_log(
+                name,
+                namespace,
+                container=container,
+                follow=True,
+                _preload_content=False,
+            )
+            while True:
+                line = await resp.content.readline()
+                if not line:
+                    break
+                yield line.decode("utf-8").rstrip("\n")
 
     async def get_job_status(self, name: str, namespace: str) -> V1Job:
         """
