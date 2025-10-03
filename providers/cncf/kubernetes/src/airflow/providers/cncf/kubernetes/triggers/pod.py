@@ -200,10 +200,16 @@ class KubernetesPodTrigger(BaseTrigger):
 
     async def tail_logs(self, container_name: str):
         since_seconds = (
-            math.ceil((datetime.datetime.now(tz=datetime.timezone.utc) - self.last_log_time[container_name]).total_seconds())
+            math.ceil(
+                (
+                    datetime.datetime.now(tz=datetime.timezone.utc) - self.last_log_time[container_name]
+                ).total_seconds()
+            )
             if container_name in self.last_log_time
             else None
         )
+        if since_seconds and since_seconds < 0:
+            return
 
         async for message in self.hook.tail_container_logs(
             name=self.pod_name,
@@ -212,9 +218,16 @@ class KubernetesPodTrigger(BaseTrigger):
             since_seconds=since_seconds,
         ):
             timestamp, line = message.split(" ", 1)
-            timestamp = datetime.datetime.strptime(timestamp[0:26], "%Y-%m-%dT%H:%M:%S.%f")
+            timestamp = datetime.datetime.strptime(timestamp[0:26], "%Y-%m-%dT%H:%M:%S.%f").replace(
+                tzinfo=datetime.timezone.utc
+            )
             self.log.info("[%s] %s", container_name, line)
             self.last_log_time[container_name] = timestamp
+
+        # Log stream ended so setting last log time to the future so we don't try to fetch old logs
+        self.last_log_time[container_name] = datetime.datetime.now(
+            tz=datetime.timezone.utc
+        ) + datetime.timedelta(hours=1)
 
     def _format_exception_description(self, exc: Exception) -> Any:
         if isinstance(exc, PodLaunchTimeoutException):

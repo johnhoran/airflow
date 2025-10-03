@@ -861,12 +861,18 @@ class KubernetesPodOperator(BaseOperator):
                 in_cluster=self.in_cluster,
                 poll_interval=self.poll_interval,
                 container_logs=(
-                    self.container_logs if isinstance(self.container_logs, list) else [self.container_logs]
-                )
-                + (
                     self.init_container_logs
                     if isinstance(self.init_container_logs, list)
                     else [self.init_container_logs]
+                    if isinstance(self.init_container_logs, str)
+                    else []
+                )
+                + (
+                    self.container_logs
+                    if isinstance(self.container_logs, list)
+                    else [self.container_logs]
+                    if isinstance(self.container_logs, str)
+                    else []
                 ),
                 startup_timeout=self.startup_timeout_seconds,
                 startup_check_interval=self.startup_check_interval_seconds,
@@ -912,7 +918,6 @@ class KubernetesPodOperator(BaseOperator):
                     )
 
             if event["status"] in ("error", "failed", "timeout", "success"):
-
                 if self.get_logs:
                     trigger = KubernetesPodTrigger(
                         pod_name=self.pod.metadata.name,  # type: ignore[union-attr]
@@ -922,13 +927,17 @@ class KubernetesPodOperator(BaseOperator):
                         config_dict=self._config_dict,
                         in_cluster=self.in_cluster,
                         container_logs=(
-                            self.container_logs if isinstance(self.container_logs, list) else [self.container_logs] if isinstance(self.container_logs, str) else []
-                        )
-                        + (
                             self.init_container_logs
                             if isinstance(self.init_container_logs, list)
                             else [self.init_container_logs]
                             if isinstance(self.init_container_logs, str)
+                            else []
+                        )
+                        + (
+                            self.container_logs
+                            if isinstance(self.container_logs, list)
+                            else [self.container_logs]
+                            if isinstance(self.container_logs, str)
                             else []
                         ),
                         base_container_name=self.base_container_name,
@@ -936,13 +945,11 @@ class KubernetesPodOperator(BaseOperator):
                         logging_interval=self.logging_interval,
                         trigger_kwargs=self.trigger_kwargs,
                         last_log_time=event.get("last_log_time"),
-                        trigger_start_time=None
+                        trigger_start_time=None,
                     )
 
                     for container in trigger.container_logs:
-                        asyncio.run(
-                            trigger.tail_logs(container)
-                        )
+                        asyncio.run(trigger.tail_logs(container))
 
                 for callback in self.callbacks:
                     callback.on_pod_completion(
