@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import math
 import traceback
 from collections.abc import AsyncIterator
 from enum import Enum
@@ -93,7 +94,7 @@ class KubernetesPodTrigger(BaseTrigger):
         startup_timeout: int = 120,
         startup_check_interval: int = 5,
         on_finish_action: str = "delete_pod",
-        last_log_time: DateTime | None = None,
+        last_log_time: dict[str, DateTime] | None = None,
         logging_interval: int | None = None,
         trigger_kwargs: dict | None = None,
     ):
@@ -110,7 +111,7 @@ class KubernetesPodTrigger(BaseTrigger):
         self.container_logs = container_logs or []
         self.startup_timeout = startup_timeout
         self.startup_check_interval = startup_check_interval
-        self.last_log_time = last_log_time
+        self.last_log_time = last_log_time or {}
         self.logging_interval = logging_interval
         self.on_finish_action = OnFinishAction(on_finish_action)
         self.trigger_kwargs = trigger_kwargs or {}
@@ -146,7 +147,7 @@ class KubernetesPodTrigger(BaseTrigger):
         self.log.info("Checking pod %r in namespace %r.", self.pod_name, self.pod_namespace)
 
         try:
-            state = await self._wait_for_pod_completion()
+            state = await self.wait_for_pod_completion()
             if state == ContainerState.TERMINATED:
                 event = TriggerEvent(
                     {
@@ -154,6 +155,7 @@ class KubernetesPodTrigger(BaseTrigger):
                         "namespace": self.pod_namespace,
                         "name": self.pod_name,
                         "message": "All containers inside pod have started successfully.",
+                        "last_log_time": self.last_log_time,
                         **self.trigger_kwargs,
                     }
                 )
@@ -164,6 +166,7 @@ class KubernetesPodTrigger(BaseTrigger):
                         "namespace": self.pod_namespace,
                         "name": self.pod_name,
                         "message": "pod failed",
+                        "last_log_time": self.last_log_time,
                         **self.trigger_kwargs,
                     }
                 )
@@ -176,6 +179,7 @@ class KubernetesPodTrigger(BaseTrigger):
                     "namespace": self.pod_namespace,
                     "status": "timeout",
                     "message": message,
+                    "last_log_time": self.last_log_time,
                     **self.trigger_kwargs,
                 }
             )
@@ -188,18 +192,29 @@ class KubernetesPodTrigger(BaseTrigger):
                     "status": "error",
                     "message": str(e),
                     "stack_trace": traceback.format_exc(),
+                    "last_log_time": self.last_log_time,
                     **self.trigger_kwargs,
                 }
             )
             return
 
     async def tail_logs(self, container_name: str):
+        since_seconds = (
+            math.ceil((datetime.datetime.now(tz=datetime.timezone.utc) - self.last_log_time[container_name]).total_seconds())
+            if container_name in self.last_log_time
+            else None
+        )
+
         async for message in self.hook.tail_container_logs(
             name=self.pod_name,
             namespace=self.pod_namespace,
             container=container_name,
+            since_seconds=since_seconds,
         ):
-            self.log.info("[%s] %s", container_name, message)
+            timestamp, line = message.split(" ", 1)
+            timestamp = datetime.datetime.strptime(timestamp[0:26], "%Y-%m-%dT%H:%M:%S.%f")
+            self.log.info("[%s] %s", container_name, line)
+            self.last_log_time[container_name] = timestamp
 
     def _format_exception_description(self, exc: Exception) -> Any:
         if isinstance(exc, PodLaunchTimeoutException):
@@ -226,7 +241,7 @@ class KubernetesPodTrigger(BaseTrigger):
         # Timeout reached without pod starting
         raise PodLaunchTimeoutException("Pod did not leave 'Pending' phase within specified timeout")
 
-    async def _wait_for_pod_completion(self) -> ContainerState:
+    async def wait_for_pod_completion(self) -> ContainerState:
         """Loops until pod phase leaves ``PENDING`` If timeout is reached, throws error."""
         log_tasks: dict[str, asyncio.Task] = {}
 
@@ -252,7 +267,7 @@ class KubernetesPodTrigger(BaseTrigger):
                         if (
                             container
                             and container.state
-                            and container.state.running
+                            and (container.state.running or container.state.terminated)
                             and container.name
                             and container.name in self.container_logs
                             and container.name not in log_tasks

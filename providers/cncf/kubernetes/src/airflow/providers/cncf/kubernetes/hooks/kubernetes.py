@@ -920,6 +920,7 @@ class AsyncKubernetesHook(KubernetesHook):
         name: str,
         namespace: str,
         container: str,
+        since_seconds: int | None = None,
     ) -> AsyncIterator[str]:
         async with self.get_conn() as connection:
             v1_api = async_client.CoreV1Api(connection)
@@ -930,6 +931,8 @@ class AsyncKubernetesHook(KubernetesHook):
                 container=container,
                 follow=True,
                 _preload_content=False,
+                timestamps=True,
+                since_seconds=since_seconds,
             )
             while True:
                 line = await resp.content.readline()

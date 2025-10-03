@@ -912,8 +912,37 @@ class KubernetesPodOperator(BaseOperator):
                     )
 
             if event["status"] in ("error", "failed", "timeout", "success"):
-                # if self.get_logs:
-                #     self._write_logs(self.pod, follow=follow, since_time=last_log_time)
+
+                if self.get_logs:
+                    trigger = KubernetesPodTrigger(
+                        pod_name=self.pod.metadata.name,  # type: ignore[union-attr]
+                        pod_namespace=self.pod.metadata.namespace,  # type: ignore[union-attr]
+                        kubernetes_conn_id=self.kubernetes_conn_id,
+                        cluster_context=self.cluster_context,
+                        config_dict=self._config_dict,
+                        in_cluster=self.in_cluster,
+                        container_logs=(
+                            self.container_logs if isinstance(self.container_logs, list) else [self.container_logs] if isinstance(self.container_logs, str) else []
+                        )
+                        + (
+                            self.init_container_logs
+                            if isinstance(self.init_container_logs, list)
+                            else [self.init_container_logs]
+                            if isinstance(self.init_container_logs, str)
+                            else []
+                        ),
+                        base_container_name=self.base_container_name,
+                        on_finish_action=self.on_finish_action.value,
+                        logging_interval=self.logging_interval,
+                        trigger_kwargs=self.trigger_kwargs,
+                        last_log_time=event.get("last_log_time"),
+                        trigger_start_time=None
+                    )
+
+                    for container in trigger.container_logs:
+                        asyncio.run(
+                            trigger.tail_logs(container)
+                        )
 
                 for callback in self.callbacks:
                     callback.on_pod_completion(
