@@ -18,9 +18,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import datetime
 import json
 import tempfile
-from collections.abc import Generator
+from collections.abc import AsyncGenerator, Generator
 from functools import cached_property
 from time import sleep
 from typing import TYPE_CHECKING, Any
@@ -32,7 +33,7 @@ from asgiref.sync import sync_to_async
 from kubernetes import client, config, utils, watch
 from kubernetes.client.models import V1Deployment
 from kubernetes.config import ConfigException
-from kubernetes_asyncio import client as async_client, config as async_config
+from kubernetes_asyncio import client as async_client, config as async_config, watch as async_watch
 from urllib3.exceptions import HTTPError
 
 from airflow.exceptions import AirflowException, AirflowNotFoundException
@@ -856,6 +857,25 @@ class AsyncKubernetesHook(KubernetesHook):
             )
         return pod
 
+    async def watch_pod(self, name: str, namespace: str, timeout=None) -> AsyncGenerator[tuple[Any, str]]:
+        """
+        Watch for changes to the specified pod.
+        :param name: Name of the pod.
+        :param namespace: Name of the pod's namespace.
+        :param timeout: Timeout in seconds for the watch. If None, watch will continue indefinitely.
+        :return: An async generator yielding tuples of (event type, pod object).
+        """
+        async with self.get_conn() as connection:
+            v1_api = async_client.CoreV1Api(connection)
+            async with async_watch.Watch().stream(
+                v1_api.list_namespaced_pod,
+                namespace=namespace,
+                field_selector=f"metadata.name={name}",
+                **{"timeout_seconds": timeout} if timeout else {},
+            ) as stream:
+                async for event in stream:
+                    yield event["type"], event["object"]
+
     async def delete_pod(self, name: str, namespace: str):
         """
         Delete pod's object.
@@ -902,6 +922,50 @@ class AsyncKubernetesHook(KubernetesHook):
             except HTTPError:
                 self.log.exception("There was an error reading the kubernetes API.")
                 raise
+
+    async def tail_container_logs(
+        self,
+        name: str,
+        namespace: str,
+        container: str,
+        since_seconds: int | None = None,
+    ) -> AsyncGenerator[tuple[datetime.datetime, str]]:
+        last_timestamp = None
+
+        async with self.get_conn() as connection:
+            v1_api = async_client.CoreV1Api(connection)
+
+            while True:
+                try:
+                    resp = await v1_api.read_namespaced_pod_log(
+                        name,
+                        namespace,
+                        container=container,
+                        follow=True,
+                        _preload_content=False,
+                        timestamps=True,
+                        since_seconds=since_seconds,
+                    )
+                    while True:
+                        line = await resp.content.readline()
+
+                        if not line:
+                            break
+
+                        line = line.decode("utf8").rstrip("\n")
+                        timestamp, message = line.split(" ", 1)
+                        timestamp = datetime.datetime.strptime(
+                            timestamp[0:26], "%Y-%m-%dT%H:%M:%S.%f"
+                        ).replace(tzinfo=datetime.timezone.utc)
+                        yield timestamp, message
+                        last_timestamp = timestamp
+                except asyncio.TimeoutError:
+                    if last_timestamp:
+                        since_seconds = int(
+                            (datetime.datetime.now(datetime.timezone.utc) - last_timestamp).total_seconds()
+                        )
+                    continue
+                break
 
     async def get_job_status(self, name: str, namespace: str) -> V1Job:
         """
