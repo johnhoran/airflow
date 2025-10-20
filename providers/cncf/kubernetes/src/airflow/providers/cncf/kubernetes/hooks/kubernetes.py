@@ -860,6 +860,7 @@ class AsyncKubernetesHook(KubernetesHook):
     async def watch_pod(self, name: str, namespace: str, timeout=None) -> AsyncGenerator[tuple[Any, str]]:
         """
         Watch for changes to the specified pod.
+
         :param name: Name of the pod.
         :param namespace: Name of the pod's namespace.
         :param timeout: Timeout in seconds for the watch. If None, watch will continue indefinitely.
@@ -929,7 +930,16 @@ class AsyncKubernetesHook(KubernetesHook):
         namespace: str,
         container: str,
         since_seconds: int | None = None,
-    ) -> AsyncGenerator[tuple[datetime.datetime, str]]:
+    ) -> AsyncGenerator[tuple[datetime.datetime | None, str]]:
+        """
+        Tail logs from a specific container in a pod.
+
+        :param name: Name of the pod.
+        :param namespace: Namespace of the pod.
+        :param container: Name of the container in the pod.
+        :param since_seconds: Only return logs newer than a relative duration in seconds, if None then start from the beginning.
+        :return: An async generator yielding tuples of (timestamp, log line).
+        """
         last_timestamp = None
 
         async with self.get_conn() as connection:
@@ -951,14 +961,16 @@ class AsyncKubernetesHook(KubernetesHook):
 
                         if not line:
                             break
-
                         line = line.decode("utf8").rstrip("\n")
                         timestamp, message = line.split(" ", 1)
-                        timestamp = datetime.datetime.strptime(
-                            timestamp[0:26], "%Y-%m-%dT%H:%M:%S.%f"
-                        ).replace(tzinfo=datetime.timezone.utc)
-                        yield timestamp, message
-                        last_timestamp = timestamp
+                        try:
+                            timestamp = datetime.datetime.strptime(
+                                timestamp[0:26], "%Y-%m-%dT%H:%M:%S.%f"
+                            ).replace(tzinfo=datetime.timezone.utc)
+                            yield timestamp, message
+                            last_timestamp = timestamp
+                        except ValueError:
+                            yield None, line
                 except asyncio.TimeoutError:
                     if last_timestamp:
                         since_seconds = int(
