@@ -848,21 +848,21 @@ class KubernetesPodOperator(BaseOperator):
         else:
             self._config_dict = None
 
-    def invoke_defer_method(self) -> None:
+    def invoke_defer_method(self, last_log_time: dict[str, DateTime] | None = None) -> None:
         """Redefine triggers which are being used in child classes."""
         self.convert_config_file_to_dict()
-        trigger_start_time = datetime.datetime.now(tz=datetime.timezone.utc)
         self.defer(
-            trigger=KubernetesPodTrigger(
-                pod_name=self.pod.metadata.name,  # type: ignore[union-attr]
-                pod_namespace=self.pod.metadata.namespace,  # type: ignore[union-attr]
-                trigger_start_time=trigger_start_time,
-                kubernetes_conn_id=self.kubernetes_conn_id,
-                cluster_context=self.cluster_context,
-                config_dict=self._config_dict,
-                in_cluster=self.in_cluster,
-                poll_interval=self.poll_interval,
-                get_container_logs=(
+            trigger=self._trigger(last_log_time=last_log_time),
+            method_name="trigger_reentry",
+        )
+
+    def _trigger(self, last_log_time: dict[str, DateTime] | None = None) -> KubernetesPodTrigger:
+        trigger_start_time = datetime.datetime.now(tz=datetime.timezone.utc)
+        log_containers = (
+            []
+            if not self.get_logs
+            else (
+                (
                     self.init_container_logs
                     if isinstance(self.init_container_logs, list)
                     else [self.init_container_logs]
@@ -875,15 +875,27 @@ class KubernetesPodOperator(BaseOperator):
                     else [self.container_logs]
                     if isinstance(self.container_logs, str)
                     else []
-                ),
-                startup_timeout=self.startup_timeout_seconds,
-                startup_check_interval=self.startup_check_interval_seconds,
-                base_container_name=self.base_container_name,
-                on_finish_action=self.on_finish_action.value,
-                logging_interval=self.logging_interval,
-                trigger_kwargs=self.trigger_kwargs,
-            ),
-            method_name="trigger_reentry",
+                )
+            )
+        )
+
+        return KubernetesPodTrigger(
+            pod_name=self.pod.metadata.name,  # type: ignore[union-attr]
+            pod_namespace=self.pod.metadata.namespace,  # type: ignore[union-attr]
+            trigger_start_time=trigger_start_time,
+            kubernetes_conn_id=self.kubernetes_conn_id,
+            cluster_context=self.cluster_context,
+            config_dict=self._config_dict,
+            in_cluster=self.in_cluster,
+            poll_interval=self.poll_interval,
+            get_container_logs=log_containers,
+            startup_timeout=self.startup_timeout_seconds,
+            startup_check_interval=self.startup_check_interval_seconds,
+            base_container_name=self.base_container_name,
+            on_finish_action=self.on_finish_action.value,
+            last_log_time=last_log_time,
+            logging_interval=self.logging_interval,
+            trigger_kwargs=self.trigger_kwargs,
         )
 
     def trigger_reentry(self, context: Context, event: dict[str, Any]) -> Any:
@@ -919,38 +931,11 @@ class KubernetesPodOperator(BaseOperator):
                     )
 
             # follow = self.logging_interval is None
-            # last_log_time = event.get("last_log_time")
+            last_log_time = event.get("last_log_time")
 
             if event["status"] in ("error", "failed", "timeout", "success"):
                 if self.get_logs:
-                    trigger = KubernetesPodTrigger(
-                        pod_name=self.pod.metadata.name,  # type: ignore[union-attr]
-                        pod_namespace=self.pod.metadata.namespace,  # type: ignore[union-attr]
-                        kubernetes_conn_id=self.kubernetes_conn_id,
-                        cluster_context=self.cluster_context,
-                        config_dict=self._config_dict,
-                        in_cluster=self.in_cluster,
-                        get_container_logs=(
-                            self.init_container_logs
-                            if isinstance(self.init_container_logs, list)
-                            else [self.init_container_logs]
-                            if isinstance(self.init_container_logs, str)
-                            else []
-                        )
-                        + (
-                            self.container_logs
-                            if isinstance(self.container_logs, list)
-                            else [self.container_logs]
-                            if isinstance(self.container_logs, str)
-                            else []
-                        ),
-                        base_container_name=self.base_container_name,
-                        on_finish_action=self.on_finish_action.value,
-                        logging_interval=self.logging_interval,
-                        trigger_kwargs=self.trigger_kwargs,
-                        last_log_time=event.get("last_log_time"),
-                        trigger_start_time=datetime.datetime.now(tz=datetime.timezone.utc),
-                    )
+                    trigger = self._trigger(last_log_time=last_log_time)
                     for container in trigger.get_container_logs:
                         asyncio.run(trigger.tail_logs(container))
 
@@ -983,21 +968,7 @@ class KubernetesPodOperator(BaseOperator):
                 return xcom_sidecar_output
 
             if event["status"] == "running":
-                # if self.get_logs:
-                #     self.log.info("Resuming logs read from time %r", last_log_time)
-
-                #     pod_log_status = self.pod_manager.fetch_container_logs(
-                #         pod=self.pod,
-                #         container_name=self.base_container_name,
-                #         follow=follow,
-                #         since_time=last_log_time,
-                #         container_name_log_prefix_enabled=self.container_name_log_prefix_enabled,
-                #         log_formatter=self.log_formatter,
-                #     )
-
-                #     self.invoke_defer_method(pod_log_status.last_log_time)
-                # else:
-                self.invoke_defer_method()
+                self.invoke_defer_method(last_log_time=last_log_time)
         except TaskDeferred:
             raise
         finally:
