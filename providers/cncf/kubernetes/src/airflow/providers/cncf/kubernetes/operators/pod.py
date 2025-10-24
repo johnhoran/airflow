@@ -890,11 +890,9 @@ class KubernetesPodOperator(BaseOperator):
             poll_interval=self.poll_interval,
             get_container_logs=log_containers,
             startup_timeout=self.startup_timeout_seconds,
-            startup_check_interval=self.startup_check_interval_seconds,
             base_container_name=self.base_container_name,
             on_finish_action=self.on_finish_action.value,
             last_log_time=last_log_time,
-            logging_interval=self.logging_interval,
             trigger_kwargs=self.trigger_kwargs,
         )
 
@@ -930,7 +928,6 @@ class KubernetesPodOperator(BaseOperator):
                         operator=self,
                     )
 
-            # follow = self.logging_interval is None
             last_log_time = event.get("last_log_time")
 
             if event["status"] in ("error", "failed", "timeout", "success"):

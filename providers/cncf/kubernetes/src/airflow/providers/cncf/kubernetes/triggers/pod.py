@@ -73,8 +73,6 @@ class KubernetesPodTrigger(BaseTrigger):
     :param on_finish_action: What to do when the pod reaches its final state, or the execution is interrupted.
         If "delete_pod", the pod will be deleted regardless its state; if "delete_succeeded_pod",
         only succeeded pod will be deleted. You can set to "keep_pod" to keep the pod.
-    :param logging_interval: number of seconds to wait before kicking it back to
-        the operator to print latest logs. If ``None`` will wait until container done.
     :param last_log_time: where to resume logs from
     :param trigger_kwargs: additional keyword parameters to send in the event
     """
@@ -92,10 +90,8 @@ class KubernetesPodTrigger(BaseTrigger):
         in_cluster: bool | None = None,
         get_container_logs: list[str] | None = None,
         startup_timeout: int = 120,
-        startup_check_interval: int = 5,
         on_finish_action: str = "delete_pod",
         last_log_time: dict[str, pendulum.DateTime] | None = None,
-        logging_interval: int | None = None,
         trigger_kwargs: dict | None = None,
     ):
         super().__init__()
@@ -110,9 +106,7 @@ class KubernetesPodTrigger(BaseTrigger):
         self.in_cluster = in_cluster
         self.get_container_logs = get_container_logs or []
         self.startup_timeout = startup_timeout
-        self.startup_check_interval = startup_check_interval
         self.last_log_time = last_log_time or {}
-        self.logging_interval = logging_interval
         self.on_finish_action = OnFinishAction(on_finish_action)
         self.trigger_kwargs = trigger_kwargs or {}
 
@@ -137,7 +131,6 @@ class KubernetesPodTrigger(BaseTrigger):
                 "trigger_start_time": self.trigger_start_time,
                 "on_finish_action": self.on_finish_action.value,
                 "last_log_time": self.last_log_time,
-                "logging_interval": self.logging_interval,
                 "trigger_kwargs": self.trigger_kwargs,
             },
         )
@@ -223,55 +216,6 @@ class KubernetesPodTrigger(BaseTrigger):
         # Timeout reached without pod starting
         raise PodLaunchTimeoutException("Pod did not leave 'Pending' phase within specified timeout")
 
-    async def _wait_for_container_completion(self) -> TriggerEvent:
-        """
-        Wait for container completion.
-
-        Waits until container is no longer in running state. If trigger is configured with a logging period,
-        then will emit an event to resume the task for the purpose of fetching more logs.
-        """
-        time_begin = datetime.datetime.now(tz=datetime.timezone.utc)
-        time_get_more_logs = None
-        if self.logging_interval is not None:
-            time_get_more_logs = time_begin + datetime.timedelta(seconds=self.logging_interval)
-        while True:
-            pod = await self._get_pod()
-            container_state = self.define_container_state(pod)
-            if container_state == ContainerState.TERMINATED:
-                return TriggerEvent(
-                    {
-                        "status": "success",
-                        "namespace": self.pod_namespace,
-                        "name": self.pod_name,
-                        "last_log_time": self.last_log_time,
-                        **self.trigger_kwargs,
-                    }
-                )
-            if container_state == ContainerState.FAILED:
-                return TriggerEvent(
-                    {
-                        "status": "failed",
-                        "namespace": self.pod_namespace,
-                        "name": self.pod_name,
-                        "message": "Container state failed",
-                        "last_log_time": self.last_log_time,
-                        **self.trigger_kwargs,
-                    }
-                )
-            self.log.debug("Container is not completed and still working.")
-            if time_get_more_logs and datetime.datetime.now(tz=datetime.timezone.utc) > time_get_more_logs:
-                return TriggerEvent(
-                    {
-                        "status": "running",
-                        "last_log_time": self.last_log_time,
-                        "namespace": self.pod_namespace,
-                        "name": self.pod_name,
-                        **self.trigger_kwargs,
-                    }
-                )
-            self.log.debug("Sleeping for %s seconds.", self.poll_interval)
-            await asyncio.sleep(self.poll_interval)
-
     async def wait_for_pod_completion(self) -> ContainerState:
         """Loops until pod phase leaves ``PENDING`` If timeout is reached, throws error."""
         log_tasks: dict[str, asyncio.Task] = {}
@@ -310,6 +254,7 @@ class KubernetesPodTrigger(BaseTrigger):
                         log_tasks[container.name] = log_task
 
         events = asyncio.create_task(watch_events())
+        state = ContainerState.UNDEFINED
 
         try:
             await asyncio.wait([deadline, events], return_when=asyncio.FIRST_COMPLETED)
@@ -322,6 +267,7 @@ class KubernetesPodTrigger(BaseTrigger):
                 state = await events
             except asyncio.CancelledError:
                 pass
+
             for task in log_tasks.values():
                 task.cancel()
             for task in log_tasks.values():
