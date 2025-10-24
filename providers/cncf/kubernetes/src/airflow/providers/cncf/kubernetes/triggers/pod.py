@@ -69,7 +69,6 @@ class KubernetesPodTrigger(BaseTrigger):
     :param in_cluster: run kubernetes client with in_cluster configuration.
     :param get_container_logs: get the stdout of the container as logs of the tasks.
     :param startup_timeout: timeout in seconds to start up the pod.
-    :param startup_check_interval: interval in seconds to check if the pod has already started.
     :param on_finish_action: What to do when the pod reaches its final state, or the execution is interrupted.
         If "delete_pod", the pod will be deleted regardless its state; if "delete_succeeded_pod",
         only succeeded pod will be deleted. You can set to "keep_pod" to keep the pod.
@@ -127,7 +126,6 @@ class KubernetesPodTrigger(BaseTrigger):
                 "in_cluster": self.in_cluster,
                 "get_container_logs": self.get_container_logs,
                 "startup_timeout": self.startup_timeout,
-                "startup_check_interval": self.startup_check_interval,
                 "trigger_start_time": self.trigger_start_time,
                 "on_finish_action": self.on_finish_action.value,
                 "last_log_time": self.last_log_time,
