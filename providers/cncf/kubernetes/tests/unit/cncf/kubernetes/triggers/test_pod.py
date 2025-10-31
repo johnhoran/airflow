@@ -32,6 +32,7 @@ from pendulum import DateTime
 from airflow.providers.cncf.kubernetes.triggers.pod import ContainerState, KubernetesPodTrigger
 from airflow.providers.cncf.kubernetes.utils.pod_manager import PodPhase
 from airflow.triggers.base import TriggerEvent
+from regex import B
 
 TRIGGER_PATH = "airflow.providers.cncf.kubernetes.triggers.pod.KubernetesPodTrigger"
 HOOK_PATH = "airflow.providers.cncf.kubernetes.hooks.kubernetes.AsyncKubernetesHook"
@@ -42,7 +43,6 @@ POLL_INTERVAL = 2
 CLUSTER_CONTEXT = "test-context"
 CONFIG_DICT = {"a": "b"}
 IN_CLUSTER = False
-GET_LOGS = True
 STARTUP_TIMEOUT_SECS = 120
 TRIGGER_START_TIME = datetime.datetime.now(tz=datetime.timezone.utc)
 FAILED_RESULT_MSG = "Test message that appears when trigger have failed event."
@@ -61,7 +61,7 @@ def trigger():
         cluster_context=CLUSTER_CONTEXT,
         config_dict=CONFIG_DICT,
         in_cluster=IN_CLUSTER,
-        get_logs=GET_LOGS,
+        get_container_logs=[BASE_CONTAINER_NAME],
         startup_timeout=STARTUP_TIMEOUT_SECS,
         trigger_start_time=TRIGGER_START_TIME,
         on_finish_action=ON_FINISH_ACTION,
@@ -104,18 +104,16 @@ class TestKubernetesPodTrigger:
             "cluster_context": CLUSTER_CONTEXT,
             "config_dict": CONFIG_DICT,
             "in_cluster": IN_CLUSTER,
-            "get_logs": GET_LOGS,
+            "get_container_logs": [BASE_CONTAINER_NAME],
             "startup_timeout": STARTUP_TIMEOUT_SECS,
-            "startup_check_interval": 5,
             "trigger_start_time": TRIGGER_START_TIME,
             "on_finish_action": ON_FINISH_ACTION,
-            "last_log_time": None,
-            "logging_interval": None,
+            "last_log_time": {},
             "trigger_kwargs": {},
         }
 
     @pytest.mark.asyncio
-    @mock.patch(f"{TRIGGER_PATH}._wait_for_pod_start")
+    @mock.patch(f"{TRIGGER_PATH}.wait_for_pod_completion")
     async def test_run_loop_return_success_event(self, mock_wait_pod, trigger):
         mock_wait_pod.return_value = ContainerState.TERMINATED
 
@@ -125,6 +123,7 @@ class TestKubernetesPodTrigger:
                 "namespace": "default",
                 "name": "test-pod-name",
                 "message": "All containers inside pod have started successfully.",
+                "last_log_time": {},
             }
         )
         actual_event = await trigger.run().asend(None)
@@ -132,56 +131,11 @@ class TestKubernetesPodTrigger:
         assert actual_event == expected_event
 
     @pytest.mark.asyncio
-    @mock.patch(f"{TRIGGER_PATH}._wait_for_pod_start")
-    @mock.patch(f"{TRIGGER_PATH}.define_container_state")
-    @mock.patch(f"{TRIGGER_PATH}.hook")
-    async def test_run_loop_return_waiting_event(
-        self, mock_hook, mock_method, mock_wait_pod, trigger, caplog
-    ):
-        mock_hook.get_pod.return_value = self._mock_pod_result(mock.MagicMock())
-        mock_method.return_value = ContainerState.WAITING
-
-        caplog.set_level(logging.INFO)
-
-        task = asyncio.create_task(trigger.run().__anext__())
-        await asyncio.sleep(0.5)
-
-        assert not task.done()
-        assert "Container is not completed and still working."
-        assert f"Sleeping for {POLL_INTERVAL} seconds."
-
-    @pytest.mark.asyncio
-    @mock.patch(f"{TRIGGER_PATH}._wait_for_pod_start")
-    @mock.patch(f"{TRIGGER_PATH}.define_container_state")
-    @mock.patch(f"{TRIGGER_PATH}.hook")
-    async def test_run_loop_return_running_event(
-        self, mock_hook, mock_method, mock_wait_pod, trigger, caplog
-    ):
-        mock_hook.get_pod.return_value = self._mock_pod_result(mock.MagicMock())
-        mock_method.return_value = ContainerState.RUNNING
-
-        caplog.set_level(logging.INFO)
-
-        task = asyncio.create_task(trigger.run().__anext__())
-        await asyncio.sleep(0.5)
-
-        assert not task.done()
-        assert "Container is not completed and still working."
-        assert f"Sleeping for {POLL_INTERVAL} seconds."
-
-    @pytest.mark.asyncio
-    @mock.patch(f"{TRIGGER_PATH}._wait_for_pod_start")
+    @mock.patch(f"{TRIGGER_PATH}.wait_for_pod_completion")
     @mock.patch(f"{TRIGGER_PATH}.define_container_state")
     @mock.patch(f"{TRIGGER_PATH}.hook")
     async def test_run_loop_return_failed_event(self, mock_hook, mock_method, mock_wait_pod, trigger):
-        mock_hook.get_pod.return_value = self._mock_pod_result(
-            mock.MagicMock(
-                status=mock.MagicMock(
-                    message=FAILED_RESULT_MSG,
-                )
-            )
-        )
-        mock_method.return_value = ContainerState.FAILED
+        mock_wait_pod.return_value = ContainerState.FAILED
 
         expected_event = TriggerEvent(
             {
@@ -189,7 +143,7 @@ class TestKubernetesPodTrigger:
                 "namespace": "default",
                 "name": "test-pod-name",
                 "message": "Container state failed",
-                "last_log_time": None,
+                "last_log_time": {},
             }
         )
         actual_event = await trigger.run().asend(None)
@@ -206,14 +160,20 @@ class TestKubernetesPodTrigger:
         Test that KubernetesPodTrigger fires the correct event in case of an error.
         """
 
-        mock_hook.get_pod.side_effect = Exception("Test exception")
+        mock_hook.watch_pod.side_effect = Exception("Test exception")
 
         generator = trigger.run()
         actual = await generator.asend(None)
         actual_stack_trace = actual.payload.pop("stack_trace")
         assert (
             TriggerEvent(
-                {"name": POD_NAME, "namespace": NAMESPACE, "status": "error", "message": "Test exception"}
+                {
+                    "name": POD_NAME,
+                    "namespace": NAMESPACE,
+                    "status": "error",
+                    "message": "Test exception",
+                    "last_log_time": {},
+                }
             )
             == actual
         )
@@ -347,32 +307,46 @@ class TestKubernetesPodTrigger:
                     "namespace": NAMESPACE,
                     "status": "timeout",
                     "message": "Pod did not leave 'Pending' phase within specified timeout",
+                    "last_log_time": {},
                 }
             )
             == actual
         )
 
     @pytest.mark.asyncio
-    @mock.patch(f"{TRIGGER_PATH}.define_container_state")
     @mock.patch(f"{TRIGGER_PATH}.hook")
-    async def test_run_loop_return_success_for_completed_pod_after_timeout(
-        self, mock_hook, mock_method, trigger, caplog
-    ):
+    async def test_run_loop_return_success_for_completed_pod_after_timeout(self, mock_hook, trigger, caplog):
         """
         Test that the trigger correctly recognizes the pod is not pending even after the timeout has been
         reached. This may happen when a new triggerer process takes over the trigger, the pod already left
         pending state and the timeout has been reached.
         """
-        trigger.trigger_start_time = TRIGGER_START_TIME - datetime.timedelta(minutes=2)
-        mock_hook.get_pod.return_value = self._mock_pod_result(
-            mock.MagicMock(
-                status=mock.MagicMock(
-                    phase=PodPhase.SUCCEEDED,
-                )
-            )
-        )
-        mock_method.return_value = ContainerState.TERMINATED
 
+        async def mock_watch_pod():
+            yield (
+                "ADDED",
+                k8s.V1Pod(
+                    metadata=k8s.V1ObjectMeta(name=POD_NAME, namespace="default"),
+                    status=k8s.V1PodStatus(
+                        container_statuses=[
+                            k8s.V1ContainerStatus(
+                                name=BASE_CONTAINER_NAME,
+                                image="blah",
+                                image_id="1",
+                                ready=False,
+                                state=k8s.V1ContainerState(
+                                    terminated=k8s.V1ContainerStateTerminated(exit_code=0)
+                                ),
+                                restart_count=1,
+                            )
+                        ]
+                    ),
+                ),
+            )
+
+        mock_hook.watch_pod.return_value = mock_watch_pod()
+
+        trigger.trigger_start_time = TRIGGER_START_TIME - datetime.timedelta(minutes=2)
         caplog.set_level(logging.INFO)
 
         generator = trigger.run()
@@ -384,6 +358,7 @@ class TestKubernetesPodTrigger:
                     "namespace": NAMESPACE,
                     "message": "All containers inside pod have started successfully.",
                     "status": "success",
+                    "last_log_time": {},
                 }
             )
             == actual
@@ -433,3 +408,262 @@ class TestKubernetesPodTrigger:
         with context:
             await trigger._get_pod()
         assert mock_hook.get_pod.call_count == call_count
+
+    @pytest.mark.asyncio
+    @mock.patch(f"{TRIGGER_PATH}.hook")
+    @mock.patch(f"{TRIGGER_PATH}.tail_logs")
+    async def test_pod_pending_reaching_timeout(self, mock_tail_logs, mock_hook, trigger):
+        """
+        Test that KubernetesPodTrigger fires the correct event in case of a pod startup timeout.
+        """
+
+        async def mock_watch_pod():
+            yield (
+                "ADDED",
+                k8s.V1Pod(
+                    metadata=k8s.V1ObjectMeta(name=POD_NAME, namespace="default"),
+                    status=k8s.V1PodStatus(
+                        container_statuses=[
+                            k8s.V1ContainerStatus(
+                                name=BASE_CONTAINER_NAME,
+                                image="blah",
+                                image_id="1",
+                                ready=False,
+                                state=k8s.V1ContainerState(waiting=k8s.V1ContainerStateWaiting()),
+                                restart_count=1,
+                            )
+                        ]
+                    ),
+                ),
+            )
+            await asyncio.sleep(5)
+
+        mock_hook.watch_pod.return_value = mock_watch_pod()
+
+        trigger.startup_timeout = 1
+        actual = await trigger.run().__anext__()
+        assert (
+            TriggerEvent(
+                {
+                    "name": POD_NAME,
+                    "namespace": NAMESPACE,
+                    "status": "timeout",
+                    "message": "Pod did not leave 'Pending' phase within specified timeout",
+                    "last_log_time": {},
+                }
+            )
+            == actual
+        )
+
+        mock_tail_logs.assert_not_called()
+
+    @pytest.mark.asyncio
+    @mock.patch(f"{TRIGGER_PATH}.hook")
+    @mock.patch(f"{TRIGGER_PATH}.tail_logs")
+    async def test_pod_termination_success(self, mock_tail_logs, mock_hook, trigger):
+        """
+        Test that KubernetesPodTrigger fires the correct event in case of a pod termination.
+        """
+
+        async def mock_watch_pod():
+            yield (
+                "ADDED",
+                k8s.V1Pod(
+                    metadata=k8s.V1ObjectMeta(name=POD_NAME, namespace="default"),
+                    status=k8s.V1PodStatus(
+                        container_statuses=[
+                            k8s.V1ContainerStatus(
+                                name=BASE_CONTAINER_NAME,
+                                image="blah",
+                                image_id="1",
+                                ready=False,
+                                state=k8s.V1ContainerState(waiting=k8s.V1ContainerStateWaiting()),
+                                restart_count=1,
+                            )
+                        ]
+                    ),
+                ),
+            )
+            yield (
+                "MODIFIED",
+                k8s.V1Pod(
+                    metadata=k8s.V1ObjectMeta(name=POD_NAME, namespace="default"),
+                    status=k8s.V1PodStatus(
+                        container_statuses=[
+                            k8s.V1ContainerStatus(
+                                name=BASE_CONTAINER_NAME,
+                                image="blah",
+                                image_id="1",
+                                ready=False,
+                                state=k8s.V1ContainerState(
+                                    terminated=k8s.V1ContainerStateTerminated(exit_code=0)
+                                ),
+                                restart_count=1,
+                            )
+                        ]
+                    ),
+                ),
+            )
+
+        mock_hook.watch_pod.return_value = mock_watch_pod()
+
+        trigger.startup_timeout = 100
+        actual = await trigger.run().__anext__()
+        assert (
+            TriggerEvent(
+                {
+                    "name": POD_NAME,
+                    "namespace": NAMESPACE,
+                    "status": "success",
+                    "message": "All containers inside pod have started successfully.",
+                    "last_log_time": {},
+                }
+            )
+            == actual
+        )
+
+        mock_tail_logs.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "log_containers",
+        [
+            pytest.param(
+                [],
+                id="no_logs",
+            ),
+            pytest.param(
+                [BASE_CONTAINER_NAME],
+                id="only_base",
+            ),
+            pytest.param(
+                [BASE_CONTAINER_NAME, "other"],
+                id="all_containers",
+            ),
+        ],
+    )
+    @mock.patch(f"{TRIGGER_PATH}.hook")
+    async def test_pod_log_tail(self, mock_hook, trigger, log_containers):
+        """
+        Test that KubernetesPodTrigger fires the correct event in case of a pod termination.
+        """
+
+        async def mock_watch_pod():
+            yield (
+                "ADDED",
+                k8s.V1Pod(
+                    metadata=k8s.V1ObjectMeta(name=POD_NAME, namespace="default"),
+                    status=k8s.V1PodStatus(
+                        container_statuses=[
+                            k8s.V1ContainerStatus(
+                                name=BASE_CONTAINER_NAME,
+                                image="blah",
+                                image_id="1",
+                                ready=False,
+                                state=k8s.V1ContainerState(running=k8s.V1ContainerStateRunning()),
+                                restart_count=1,
+                            )
+                        ],
+                        init_container_statuses=[
+                            k8s.V1ContainerStatus(
+                                name="other",
+                                image="blah",
+                                image_id="1",
+                                ready=False,
+                                state=k8s.V1ContainerState(
+                                    terminated=k8s.V1ContainerStateTerminated(exit_code=0)
+                                ),
+                                restart_count=1,
+                            )
+                        ],
+                    ),
+                ),
+            )
+            yield (
+                "ADDED",
+                k8s.V1Pod(
+                    metadata=k8s.V1ObjectMeta(name=POD_NAME, namespace="default"),
+                    status=k8s.V1PodStatus(
+                        container_statuses=[
+                            k8s.V1ContainerStatus(
+                                name=BASE_CONTAINER_NAME,
+                                image="blah",
+                                image_id="1",
+                                ready=False,
+                                state=k8s.V1ContainerState(
+                                    terminated=k8s.V1ContainerStateTerminated(exit_code=0)
+                                ),
+                                restart_count=1,
+                            )
+                        ],
+                        init_container_statuses=[
+                            k8s.V1ContainerStatus(
+                                name="other",
+                                image="blah",
+                                image_id="1",
+                                ready=False,
+                                state=k8s.V1ContainerState(
+                                    terminated=k8s.V1ContainerStateTerminated(exit_code=0)
+                                ),
+                                restart_count=1,
+                            )
+                        ],
+                    ),
+                ),
+            )
+
+        async def mock_tail_container_logs(container: str, **kwargs):
+            yield (
+                datetime.datetime(2024, 1, 1, 0, 0, 0, tzinfo=datetime.timezone.utc),
+                f"{container} Log line 1",
+            )
+            yield (
+                datetime.datetime(2024, 1, 1, 0, 0, 1, tzinfo=datetime.timezone.utc),
+                f"{container} Log line 2",
+            )
+            await asyncio.sleep(1000)
+
+        mock_hook.watch_pod.return_value = mock_watch_pod()
+        mock_hook.tail_container_logs = MagicMock(side_effect=mock_tail_container_logs)
+        trigger.get_container_logs = log_containers
+
+        actual = await trigger.run().__anext__()
+        assert (
+            TriggerEvent(
+                {
+                    "name": POD_NAME,
+                    "namespace": NAMESPACE,
+                    "status": "success",
+                    "message": "All containers inside pod have started successfully.",
+                    "last_log_time": {}
+                    if log_containers == []
+                    else {
+                        BASE_CONTAINER_NAME: datetime.datetime(
+                            2024, 1, 1, 0, 0, 1, tzinfo=datetime.timezone.utc
+                        )
+                    }
+                    if log_containers == [BASE_CONTAINER_NAME]
+                    else {
+                        BASE_CONTAINER_NAME: datetime.datetime(
+                            2024, 1, 1, 0, 0, 1, tzinfo=datetime.timezone.utc
+                        ),
+                        "other": datetime.datetime(2024, 1, 1, 0, 0, 1, tzinfo=datetime.timezone.utc),
+                    },
+                }
+            )
+            == actual
+        )
+
+        with (
+            contextlib.nullcontext()
+            if BASE_CONTAINER_NAME in log_containers
+            else pytest.raises(AssertionError)
+        ):
+            mock_hook.tail_container_logs.assert_any_call(
+                name=POD_NAME, namespace=NAMESPACE, container=BASE_CONTAINER_NAME, since_seconds=None
+            )
+
+        with contextlib.nullcontext() if "other" in log_containers else pytest.raises(AssertionError):
+            mock_hook.tail_container_logs.assert_any_call(
+                name=POD_NAME, namespace=NAMESPACE, container="other", since_seconds=None
+            )

@@ -155,13 +155,23 @@ class KubernetesPodTrigger(BaseTrigger):
                         "status": "failed",
                         "namespace": self.pod_namespace,
                         "name": self.pod_name,
-                        "message": "pod failed",
+                        "message": "Container state failed",
                         "last_log_time": self.last_log_time,
                         **self.trigger_kwargs,
                     }
                 )
+            else:
+                    event = TriggerEvent(
+                        {
+                            "status": "unknown",
+                            "namespace": self.pod_namespace,
+                            "name": self.pod_name,
+                            "message": f"Pod reached unexpected state: {state}",
+                            "last_log_time": self.last_log_time,
+                            **self.trigger_kwargs,
+                        }
+                    )
             yield event
-            return
         except PodLaunchTimeoutException as e:
             message = self._format_exception_description(e)
             yield TriggerEvent(
@@ -174,7 +184,6 @@ class KubernetesPodTrigger(BaseTrigger):
                     **self.trigger_kwargs,
                 }
             )
-            return
         except Exception as e:
             yield TriggerEvent(
                 {
@@ -187,7 +196,7 @@ class KubernetesPodTrigger(BaseTrigger):
                     **self.trigger_kwargs,
                 }
             )
-            return
+        return
 
     def _format_exception_description(self, exc: Exception) -> Any:
         if isinstance(exc, PodLaunchTimeoutException):
@@ -257,10 +266,11 @@ class KubernetesPodTrigger(BaseTrigger):
         try:
             await asyncio.wait([deadline, events], return_when=asyncio.FIRST_COMPLETED)
 
-            if not deadline.cancelled():
+            if deadline.done() and not deadline.cancelled():
                 events.cancel()
                 raise PodLaunchTimeoutException("Pod did not leave 'Pending' phase within specified timeout")
         finally:
+            deadline.cancel()
             try:
                 state = await events
             except asyncio.CancelledError:

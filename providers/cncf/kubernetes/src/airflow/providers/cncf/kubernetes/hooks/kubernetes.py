@@ -857,7 +857,7 @@ class AsyncKubernetesHook(KubernetesHook):
             )
         return pod
 
-    async def watch_pod(self, name: str, namespace: str, timeout=None) -> AsyncGenerator[tuple[Any, str]]:
+    async def watch_pod(self, name: str, namespace: str, timeout=None) -> AsyncGenerator[tuple[str, Any]]:
         """
         Watch for changes to the specified pod.
 
