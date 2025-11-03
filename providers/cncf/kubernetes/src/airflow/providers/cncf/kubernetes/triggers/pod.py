@@ -161,16 +161,16 @@ class KubernetesPodTrigger(BaseTrigger):
                     }
                 )
             else:
-                    event = TriggerEvent(
-                        {
-                            "status": "unknown",
-                            "namespace": self.pod_namespace,
-                            "name": self.pod_name,
-                            "message": f"Pod reached unexpected state: {state}",
-                            "last_log_time": self.last_log_time,
-                            **self.trigger_kwargs,
-                        }
-                    )
+                event = TriggerEvent(
+                    {
+                        "status": "unknown",
+                        "namespace": self.pod_namespace,
+                        "name": self.pod_name,
+                        "message": f"Pod reached unexpected state: {state}",
+                        "last_log_time": self.last_log_time,
+                        **self.trigger_kwargs,
+                    }
+                )
             yield event
         except PodLaunchTimeoutException as e:
             message = self._format_exception_description(e)

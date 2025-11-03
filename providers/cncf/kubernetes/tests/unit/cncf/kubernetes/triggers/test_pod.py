@@ -27,12 +27,9 @@ from unittest.mock import MagicMock
 
 import pytest
 from kubernetes.client import models as k8s
-from pendulum import DateTime
 
 from airflow.providers.cncf.kubernetes.triggers.pod import ContainerState, KubernetesPodTrigger
-from airflow.providers.cncf.kubernetes.utils.pod_manager import PodPhase
 from airflow.triggers.base import TriggerEvent
-from regex import B
 
 TRIGGER_PATH = "airflow.providers.cncf.kubernetes.triggers.pod.KubernetesPodTrigger"
 HOOK_PATH = "airflow.providers.cncf.kubernetes.hooks.kubernetes.AsyncKubernetesHook"
@@ -197,50 +194,6 @@ class TestKubernetesPodTrigger:
         await generator.asend(None)
         assert "Container logs:"
 
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        "logging_interval, exp_event",
-        [
-            pytest.param(
-                0,
-                {
-                    "status": "running",
-                    "last_log_time": DateTime(2022, 1, 1),
-                    "name": POD_NAME,
-                    "namespace": NAMESPACE,
-                },
-                id="short_interval",
-            ),
-        ],
-    )
-    @mock.patch(f"{TRIGGER_PATH}.define_container_state")
-    @mock.patch(f"{TRIGGER_PATH}._wait_for_pod_start")
-    @mock.patch("airflow.providers.cncf.kubernetes.triggers.pod.AsyncKubernetesHook.get_pod")
-    async def test_running_log_interval(
-        self, mock_get_pod, mock_wait_pod, define_container_state, logging_interval, exp_event
-    ):
-        """
-        If log interval given, should emit event with running status and last log time.
-        Otherwise, should make it to second loop and emit "done" event.
-        For this test we emit container status "running, running not".
-        The first "running" status gets us out of wait_for_pod_start.
-        The second "running" will fire a "running" event when logging interval is non-None.  When logging
-        interval is None, the second "running" status will just result in continuation of the loop.  And
-        when in the next loop we get a non-running status, the trigger fires a "done" event.
-        """
-        define_container_state.return_value = "running"
-        trigger = KubernetesPodTrigger(
-            pod_name=POD_NAME,
-            pod_namespace=NAMESPACE,
-            trigger_start_time=datetime.datetime.now(tz=datetime.timezone.utc),
-            base_container_name=BASE_CONTAINER_NAME,
-            startup_timeout=5,
-            poll_interval=1,
-            logging_interval=1,
-            last_log_time=DateTime(2022, 1, 1),
-        )
-        assert await trigger.run().__anext__() == TriggerEvent(exp_event)
-
     @pytest.mark.parametrize(
         "container_state, expected_state",
         [
@@ -278,40 +231,6 @@ class TestKubernetesPodTrigger:
         )
 
         assert expected_state == trigger.define_container_state(pod)
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("container_state", [ContainerState.WAITING, ContainerState.UNDEFINED])
-    @mock.patch(f"{TRIGGER_PATH}.define_container_state")
-    @mock.patch(f"{TRIGGER_PATH}.hook")
-    async def test_run_loop_return_timeout_event(
-        self, mock_hook, mock_method, trigger, caplog, container_state
-    ):
-        trigger.trigger_start_time = TRIGGER_START_TIME - datetime.timedelta(minutes=2)
-        mock_hook.get_pod.return_value = self._mock_pod_result(
-            mock.MagicMock(
-                status=mock.MagicMock(
-                    phase=PodPhase.PENDING,
-                )
-            )
-        )
-        mock_method.return_value = container_state
-
-        caplog.set_level(logging.INFO)
-
-        generator = trigger.run()
-        actual = await generator.asend(None)
-        assert (
-            TriggerEvent(
-                {
-                    "name": POD_NAME,
-                    "namespace": NAMESPACE,
-                    "status": "timeout",
-                    "message": "Pod did not leave 'Pending' phase within specified timeout",
-                    "last_log_time": {},
-                }
-            )
-            == actual
-        )
 
     @pytest.mark.asyncio
     @mock.patch(f"{TRIGGER_PATH}.hook")

@@ -70,6 +70,7 @@ POD_MANAGER_CLASS = "airflow.providers.cncf.kubernetes.utils.pod_manager.PodMana
 POD_MANAGER_MODULE = "airflow.providers.cncf.kubernetes.utils.pod_manager"
 HOOK_CLASS = "airflow.providers.cncf.kubernetes.operators.pod.KubernetesHook"
 KUB_OP_PATH = "airflow.providers.cncf.kubernetes.operators.pod.KubernetesPodOperator.{}"
+TRIGGER_CLASS = "airflow.providers.cncf.kubernetes.triggers.pod.KubernetesPodTrigger"
 
 TEST_TASK_ID = "kubernetes_task_async"
 TEST_NAMESPACE = "default"
@@ -2176,7 +2177,7 @@ class TestKubernetesPodOperator:
             create_context(op), event={"name": TEST_NAME, "namespace": TEST_NAMESPACE, "status": "running"}
         )
 
-        invoke_defer_method.assert_called_with(None)
+        invoke_defer_method.assert_called_with(last_log_time=None)
 
 
 class TestSuppress:
@@ -2508,11 +2509,11 @@ class TestKubernetesPodOperatorAsync:
 
     @pytest.mark.parametrize("get_logs", [True, False])
     @patch(KUB_OP_PATH.format("post_complete_action"))
-    @patch(KUB_OP_PATH.format("_write_logs"))
+    @patch(f"{TRIGGER_CLASS}.tail_logs")
     @patch(POD_MANAGER_CLASS)
     @patch(HOOK_CLASS)
     def test_async_get_logs_should_execute_successfully(
-        self, mocked_hook, mock_manager, mocked_write_logs, post_complete_action, get_logs
+        self, mocked_hook, mock_manager, mocked_tail_logs, post_complete_action, get_logs
     ):
         mocked_hook.return_value.get_pod.return_value = MagicMock()
         mock_manager.return_value.await_pod_completion.return_value = MagicMock()
@@ -2535,10 +2536,10 @@ class TestKubernetesPodOperatorAsync:
         )
 
         if get_logs:
-            mocked_write_logs.assert_called_once()
+            mocked_tail_logs.assert_called_once()
             post_complete_action.assert_called_once()
         else:
-            mocked_write_logs.assert_not_called()
+            mocked_tail_logs.assert_not_called()
 
     @pytest.mark.parametrize("get_logs", [True, False])
     @patch(KUB_OP_PATH.format("post_complete_action"))
