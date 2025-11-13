@@ -18,9 +18,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import datetime
 import json
 import tempfile
-from collections.abc import Generator
+from collections.abc import AsyncGenerator, Generator
 from functools import cached_property
 from time import sleep
 from typing import TYPE_CHECKING, Any, Protocol
@@ -32,7 +33,7 @@ from asgiref.sync import sync_to_async
 from kubernetes import client, config, utils, watch
 from kubernetes.client.models import V1Deployment
 from kubernetes.config import ConfigException
-from kubernetes_asyncio import client as async_client, config as async_config
+from kubernetes_asyncio import client as async_client, config as async_config, watch as async_watch
 from urllib3.exceptions import HTTPError
 
 from airflow.exceptions import AirflowException, AirflowNotFoundException
@@ -1031,3 +1032,80 @@ class AsyncKubernetesHook(KubernetesHook):
                 break
             self.log.info("Waiting for container '%s' state to be running", container_name)
             await asyncio.sleep(poll_interval)
+
+    async def watch_pod(
+        self, name: str, namespace: str, timeout: int | None = None
+    ) -> AsyncGenerator[tuple[str, Any]]:
+        """
+        Watch for changes to the specified pod.
+        :param name: Name of the pod.
+        :param namespace: Name of the pod's namespace.
+        :param timeout: Timeout in seconds for the watch. If None, watch will continue indefinitely.
+        :return: An async generator yielding tuples of (event type, pod object).
+        """
+
+        async with self.get_conn() as connection:
+            v1_api = async_client.CoreV1Api(connection)
+            async with async_watch.Watch().stream(
+                v1_api.list_namespaced_pod,
+                namespace=namespace,
+                field_selector=f"metadata.name={name}",
+                **{"timeout_seconds": timeout} if timeout else {},
+            ) as stream:
+                async for event in stream:
+                    yield event["type"], event["object"]
+
+    async def tail_container_logs(
+        self,
+        name: str,
+        namespace: str,
+        container: str,
+        since_seconds: int | None = None,
+    ) -> AsyncGenerator[tuple[datetime.datetime | None, str]]:
+        """
+        Tail logs from a specific container in a pod.
+        :param name: Name of the pod.
+        :param namespace: Namespace of the pod.
+        :param container: Name of the container in the pod.
+        :param since_seconds: Only return logs newer than a relative duration in seconds, if None then start from the beginning.
+        :return: An async generator yielding tuples of (timestamp, log line).
+        """
+
+        last_timestamp = None
+
+        async with self.get_conn() as connection:
+            v1_api = async_client.CoreV1Api(connection)
+
+            while True:
+                try:
+                    resp = await v1_api.read_namespaced_pod_log(
+                        name,
+                        namespace,
+                        container=container,
+                        follow=True,
+                        _preload_content=False,
+                        timestamps=True,
+                        since_seconds=since_seconds,
+                    )
+                    while True:
+                        line = await resp.content.readline()
+
+                        if not line:
+                            break
+                        line = line.decode("utf8").rstrip("\n")
+                        timestamp, message = line.split(" ", 1)
+                        try:
+                            timestamp = datetime.datetime.strptime(
+                                timestamp[0:26], "%Y-%m-%dT%H:%M:%S.%f"
+                            ).replace(tzinfo=datetime.timezone.utc)
+                            yield timestamp, message
+                            last_timestamp = timestamp
+                        except ValueError:
+                            yield None, line
+                except asyncio.TimeoutError:
+                    if last_timestamp:
+                        since_seconds = int(
+                            (datetime.datetime.now(datetime.timezone.utc) - last_timestamp).total_seconds()
+                        )
+                    continue
+                break

@@ -851,31 +851,52 @@ class KubernetesPodOperator(BaseOperator):
         else:
             self._config_dict = None
 
-    def invoke_defer_method(self, last_log_time: DateTime | None = None) -> None:
+    def invoke_defer_method(self, last_log_time: dict[str, DateTime] | None = None) -> None:
         """Redefine triggers which are being used in child classes."""
         self.convert_config_file_to_dict()
-        trigger_start_time = datetime.datetime.now(tz=datetime.timezone.utc)
         self.defer(
-            trigger=KubernetesPodTrigger(
-                pod_name=self.pod.metadata.name,  # type: ignore[union-attr]
-                pod_namespace=self.pod.metadata.namespace,  # type: ignore[union-attr]
-                trigger_start_time=trigger_start_time,
-                kubernetes_conn_id=self.kubernetes_conn_id,
-                cluster_context=self.cluster_context,
-                config_dict=self._config_dict,
-                in_cluster=self.in_cluster,
-                poll_interval=self.poll_interval,
-                get_logs=self.get_logs,
-                startup_timeout=self.startup_timeout_seconds,
-                startup_check_interval=self.startup_check_interval_seconds,
-                schedule_timeout=self.schedule_timeout_seconds,
-                base_container_name=self.base_container_name,
-                on_finish_action=self.on_finish_action.value,
-                last_log_time=last_log_time,
-                logging_interval=self.logging_interval,
-                trigger_kwargs=self.trigger_kwargs,
-            ),
+            trigger=self._trigger(last_log_time=last_log_time),
             method_name="trigger_reentry",
+        )
+
+    def _trigger(self, last_log_time: dict[str, DateTime] | None = None) -> KubernetesPodTrigger:
+        trigger_start_time = datetime.datetime.now(tz=datetime.timezone.utc)
+        log_containers = (
+            []
+            if not self.get_logs
+            else (
+                (
+                    self.init_container_logs
+                    if isinstance(self.init_container_logs, list)
+                    else [self.init_container_logs]
+                    if isinstance(self.init_container_logs, str)
+                    else []
+                )
+                + (
+                    self.container_logs
+                    if isinstance(self.container_logs, list)
+                    else [self.container_logs]
+                    if isinstance(self.container_logs, str)
+                    else []
+                )
+            )
+        )
+
+        return KubernetesPodTrigger(
+            pod_name=self.pod.metadata.name,  # type: ignore[union-attr]
+            pod_namespace=self.pod.metadata.namespace,  # type: ignore[union-attr]
+            trigger_start_time=trigger_start_time,
+            kubernetes_conn_id=self.kubernetes_conn_id,
+            cluster_context=self.cluster_context,
+            config_dict=self._config_dict,
+            in_cluster=self.in_cluster,
+            poll_interval=self.poll_interval,
+            get_container_logs=log_containers,
+            startup_timeout=self.startup_timeout_seconds,
+            base_container_name=self.base_container_name,
+            on_finish_action=self.on_finish_action.value,
+            last_log_time=last_log_time,
+            trigger_kwargs=self.trigger_kwargs,
         )
 
     def trigger_reentry(self, context: Context, event: dict[str, Any]) -> Any:
@@ -899,12 +920,13 @@ class KubernetesPodOperator(BaseOperator):
             if not self.pod:
                 raise PodNotFoundException("Could not find pod after resuming from deferral")
 
-            follow = self.logging_interval is None
             last_log_time = event.get("last_log_time")
 
             if event["status"] in ("error", "failed", "timeout", "success"):
                 if self.get_logs:
-                    self._write_logs(self.pod, follow=follow, since_time=last_log_time)
+                    trigger = self._trigger(last_log_time=last_log_time)
+                    for container in trigger.get_container_logs:
+                        asyncio.run(trigger.tail_logs(container))
 
                 for callback in self.callbacks:
                     callback.on_pod_completion(
