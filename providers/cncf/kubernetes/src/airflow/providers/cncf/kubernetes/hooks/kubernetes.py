@@ -1043,7 +1043,6 @@ class AsyncKubernetesHook(KubernetesHook):
         :param timeout: Timeout in seconds for the watch. If None, watch will continue indefinitely.
         :return: An async generator yielding tuples of (event type, pod object).
         """
-
         async with self.get_conn() as connection:
             v1_api = async_client.CoreV1Api(connection)
             async with async_watch.Watch().stream(
@@ -1070,7 +1069,6 @@ class AsyncKubernetesHook(KubernetesHook):
         :param since_seconds: Only return logs newer than a relative duration in seconds, if None then start from the beginning.
         :return: An async generator yielding tuples of (timestamp, log line).
         """
-
         last_timestamp = None
 
         async with self.get_conn() as connection:

@@ -118,6 +118,9 @@ class KubernetesPodTrigger(BaseTrigger):
         self.trigger_kwargs = trigger_kwargs or {}
         self._since_time = None
 
+        self.startup_check_interval = 5
+        self.logging_interval = 4
+
     def serialize(self) -> tuple[str, dict[str, Any]]:
         """Serialize KubernetesCreatePodTrigger arguments and classpath."""
         return (
@@ -131,9 +134,9 @@ class KubernetesPodTrigger(BaseTrigger):
                 "cluster_context": self.cluster_context,
                 "config_dict": self.config_dict,
                 "in_cluster": self.in_cluster,
-                "get_logs": self.get_logs,
-                "startup_timeout": self.startup_timeout,
                 "startup_check_interval": self.startup_check_interval,
+                "get_container_logs": self.get_container_logs,
+                "startup_timeout": self.startup_timeout,
                 "schedule_timeout": self.schedule_timeout,
                 "trigger_start_time": self.trigger_start_time,
                 "on_finish_action": self.on_finish_action.value,
