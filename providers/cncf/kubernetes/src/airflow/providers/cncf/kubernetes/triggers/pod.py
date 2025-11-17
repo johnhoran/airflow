@@ -99,6 +99,8 @@ class KubernetesPodTrigger(BaseTrigger):
         on_finish_action: str = "delete_pod",
         last_log_time: dict[str, pendulum.DateTime] | None = None,
         trigger_kwargs: dict | None = None,
+        startup_check_interval: int = 5,
+        logging_interval: int | None = 4,
     ):
         super().__init__()
         self.pod_name = pod_name
@@ -117,9 +119,8 @@ class KubernetesPodTrigger(BaseTrigger):
         self.on_finish_action = OnFinishAction(on_finish_action)
         self.trigger_kwargs = trigger_kwargs or {}
         self._since_time = None
-
-        self.startup_check_interval = 5
-        self.logging_interval = 4
+        self.startup_check_interval = startup_check_interval
+        self.logging_interval = logging_interval
 
     def serialize(self) -> tuple[str, dict[str, Any]]:
         """Serialize KubernetesCreatePodTrigger arguments and classpath."""
