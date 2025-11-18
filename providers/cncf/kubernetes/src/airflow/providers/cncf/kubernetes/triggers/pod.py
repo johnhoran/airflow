@@ -71,13 +71,10 @@ class KubernetesPodTrigger(BaseTrigger):
     :param in_cluster: run kubernetes client with in_cluster configuration.
     :param get_container_logs: get the stdout of the container as logs of the tasks.
     :param startup_timeout: timeout in seconds to start up the pod.
-    :param startup_check_interval: interval in seconds to check if the pod has already started.
     :param schedule_timeout: timeout in seconds to schedule pod in cluster.
     :param on_finish_action: What to do when the pod reaches its final state, or the execution is interrupted.
         If "delete_pod", the pod will be deleted regardless its state; if "delete_succeeded_pod",
         only succeeded pod will be deleted. You can set to "keep_pod" to keep the pod.
-    :param logging_interval: number of seconds to wait before kicking it back to
-        the operator to print latest logs. If ``None`` will wait until container done.
     :param last_log_time: where to resume logs from
     :param trigger_kwargs: additional keyword parameters to send in the event
     """
@@ -99,8 +96,6 @@ class KubernetesPodTrigger(BaseTrigger):
         on_finish_action: str = "delete_pod",
         last_log_time: dict[str, pendulum.DateTime] | None = None,
         trigger_kwargs: dict | None = None,
-        startup_check_interval: int = 5,
-        logging_interval: int | None = 4,
     ):
         super().__init__()
         self.pod_name = pod_name
@@ -119,8 +114,6 @@ class KubernetesPodTrigger(BaseTrigger):
         self.on_finish_action = OnFinishAction(on_finish_action)
         self.trigger_kwargs = trigger_kwargs or {}
         self._since_time = None
-        self.startup_check_interval = startup_check_interval
-        self.logging_interval = logging_interval
 
     def serialize(self) -> tuple[str, dict[str, Any]]:
         """Serialize KubernetesCreatePodTrigger arguments and classpath."""
@@ -135,14 +128,12 @@ class KubernetesPodTrigger(BaseTrigger):
                 "cluster_context": self.cluster_context,
                 "config_dict": self.config_dict,
                 "in_cluster": self.in_cluster,
-                "startup_check_interval": self.startup_check_interval,
                 "get_container_logs": self.get_container_logs,
                 "startup_timeout": self.startup_timeout,
                 "schedule_timeout": self.schedule_timeout,
                 "trigger_start_time": self.trigger_start_time,
                 "on_finish_action": self.on_finish_action.value,
                 "last_log_time": self.last_log_time,
-                "logging_interval": self.logging_interval,
                 "trigger_kwargs": self.trigger_kwargs,
             },
         )
@@ -163,7 +154,7 @@ class KubernetesPodTrigger(BaseTrigger):
                         "status": "success",
                         "namespace": self.pod_namespace,
                         "name": self.pod_name,
-                        "message": "All containers inside pod have started successfully.",
+                        "message": "All containers inside pod have completed successfully.",
                         "last_log_time": self.last_log_time,
                         **self.trigger_kwargs,
                     }
@@ -252,68 +243,6 @@ class KubernetesPodTrigger(BaseTrigger):
         curr_traceback = traceback.format_exc()
         description += f"\ntrigger traceback:\n{curr_traceback}"
         return description
-
-    async def _wait_for_pod_start(self) -> ContainerState:
-        """Loops until pod phase leaves ``PENDING`` If timeout is reached, throws error."""
-        pod = await self._get_pod()
-        events_task = self.pod_manager.watch_pod_events(pod, self.startup_check_interval)
-        pod_start_task = self.pod_manager.await_pod_start(
-            pod=pod,
-            schedule_timeout=self.schedule_timeout,
-            startup_timeout=self.startup_timeout,
-            check_interval=self.startup_check_interval,
-        )
-        await asyncio.gather(pod_start_task, events_task)
-        return self.define_container_state(await self._get_pod())
-
-    async def _wait_for_container_completion(self) -> TriggerEvent:
-        """
-        Wait for container completion.
-
-        Waits until container is no longer in running state. If trigger is configured with a logging period,
-        then will emit an event to resume the task for the purpose of fetching more logs.
-        """
-        time_begin = datetime.datetime.now(tz=datetime.timezone.utc)
-        time_get_more_logs = None
-        if self.logging_interval is not None:
-            time_get_more_logs = time_begin + datetime.timedelta(seconds=self.logging_interval)
-        while True:
-            pod = await self._get_pod()
-            container_state = self.define_container_state(pod)
-            if container_state == ContainerState.TERMINATED:
-                return TriggerEvent(
-                    {
-                        "status": "success",
-                        "namespace": self.pod_namespace,
-                        "name": self.pod_name,
-                        "last_log_time": self.last_log_time,
-                        **self.trigger_kwargs,
-                    }
-                )
-            if container_state == ContainerState.FAILED:
-                return TriggerEvent(
-                    {
-                        "status": "failed",
-                        "namespace": self.pod_namespace,
-                        "name": self.pod_name,
-                        "message": "Container state failed",
-                        "last_log_time": self.last_log_time,
-                        **self.trigger_kwargs,
-                    }
-                )
-            self.log.debug("Container is not completed and still working.")
-            if time_get_more_logs and datetime.datetime.now(tz=datetime.timezone.utc) > time_get_more_logs:
-                return TriggerEvent(
-                    {
-                        "status": "running",
-                        "last_log_time": self.last_log_time,
-                        "namespace": self.pod_namespace,
-                        "name": self.pod_name,
-                        **self.trigger_kwargs,
-                    }
-                )
-            self.log.debug("Sleeping for %s seconds.", self.poll_interval)
-            await asyncio.sleep(self.poll_interval)
 
     @tenacity.retry(stop=tenacity.stop_after_attempt(3), wait=tenacity.wait_exponential(), reraise=True)
     async def _get_pod(self) -> V1Pod:
