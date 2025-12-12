@@ -1090,6 +1090,10 @@ class AsyncPodManager(LoggingMixin):
                             if is_log_group_marker(message_to_log):
                                 print(message_to_log)
                             else:
+                                for callback in self._callbacks:
+                                    callback.progress_callback(
+                                        line=message_to_log, client=self._client, mode=ExecutionMode.ASYNC, container_name=container_name, timestamp=line_timestamp
+                                    )
                                 self.log.info("[%s] %s", container_name, message_to_log)
                         message_to_log = message
                 elif message_to_log:  # continuation of the previous log line

@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import tenacity
 
+from airflow.providers.cncf.kubernetes.callbacks import KubernetesPodOperatorCallback
 from airflow.providers.cncf.kubernetes.exceptions import KubernetesApiPermissionError
 from airflow.providers.cncf.kubernetes.hooks.kubernetes import AsyncKubernetesHook
 from airflow.providers.cncf.kubernetes.utils.pod_manager import (
@@ -101,6 +102,7 @@ class KubernetesPodTrigger(BaseTrigger):
         last_log_time: DateTime | None = None,
         logging_interval: int | None = None,
         trigger_kwargs: dict | None = None,
+        callbacks: list[type[KubernetesPodOperatorCallback]] = None,
     ):
         super().__init__()
         self.pod_name = pod_name
@@ -122,6 +124,7 @@ class KubernetesPodTrigger(BaseTrigger):
         self.on_finish_action = OnFinishAction(on_finish_action)
         self.trigger_kwargs = trigger_kwargs or {}
         self._since_time = None
+        self._callbacks = callbacks or []
 
     def serialize(self) -> tuple[str, dict[str, Any]]:
         """Serialize KubernetesCreatePodTrigger arguments and classpath."""
@@ -332,7 +335,7 @@ class KubernetesPodTrigger(BaseTrigger):
 
     @cached_property
     def pod_manager(self) -> AsyncPodManager:
-        return AsyncPodManager(async_hook=self.hook)
+        return AsyncPodManager(async_hook=self.hook, callbacks=self._callbacks)
 
     def define_container_state(self, pod: V1Pod) -> ContainerState:
         pod_containers = pod.status.container_statuses
