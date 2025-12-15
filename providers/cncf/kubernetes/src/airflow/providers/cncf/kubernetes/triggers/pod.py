@@ -335,9 +335,7 @@ class KubernetesPodTrigger(BaseTrigger):
 
     @cached_property
     def pod_manager(self) -> AsyncPodManager:
-        async with self.hook.get_conn() as connection:
-            v1_api = async_k8s.CoreV1Api(connection)
-            return AsyncPodManager(async_hook=self.hook, client=v1_api, callbacks=self._callbacks)
+        return AsyncPodManager(async_hook=self.hook, callbacks=self._callbacks)
 
     def define_container_state(self, pod: V1Pod) -> ContainerState:
         pod_containers = pod.status.container_statuses

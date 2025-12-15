@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import TYPE_CHECKING, Literal, cast
 
+import kubernetes_asyncio.client as async_k8s
 import pendulum
 from kubernetes import client, watch
 from kubernetes.client.rest import ApiException
@@ -56,7 +57,6 @@ from airflow.utils.log.logging_mixin import LoggingMixin
 from airflow.utils.timezone import utcnow
 
 if TYPE_CHECKING:
-    import kubernetes_asyncio.client as async_k8s
     from kubernetes.client.models.core_v1_event import CoreV1Event
     from kubernetes.client.models.core_v1_event_list import CoreV1EventList
     from kubernetes.client.models.v1_container_state import V1ContainerState
@@ -1074,22 +1074,10 @@ class AsyncPodManager(LoggingMixin):
             since_seconds=(math.ceil((now - since_time).total_seconds()) if since_time else None),
         )
         message_to_log = None
-        try:
-            now_seconds = now.replace(microsecond=0)
-            for line in logs:
-                line_timestamp, message = parse_log_line(line)
-                # Skip log lines from the current second to prevent duplicate entries on the next read.
-                # The API only allows specifying 'since_seconds', not an exact timestamp.
-                if line_timestamp and line_timestamp.replace(microsecond=0) == now_seconds:
-                    break
-                if line_timestamp:  # detect new log line
-                    if message_to_log is None:  # first line in the log
-                        message_to_log = message
-                    else:  # previous log line is complete
-                        if message_to_log is not None:
-                            if is_log_group_marker(message_to_log):
-                                print(message_to_log)
-                            else:
+        async with self._hook.get_conn() as connection:
+            v1_api = async_k8s.CoreV1Api(connection)
+            try:
+                now_seconds = now.replace(microsecond=0)
 
                                 for callback in self._callbacks:
                                     callback.progress_callback(

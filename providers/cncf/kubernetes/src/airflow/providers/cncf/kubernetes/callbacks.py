@@ -16,7 +16,9 @@
 # under the License.
 from __future__ import annotations
 
+import asyncio
 from enum import Enum
+from functools import wraps
 from typing import TYPE_CHECKING, TypeAlias
 
 import kubernetes.client as k8s
@@ -210,3 +212,11 @@ class KubernetesPodOperatorCallback:
         :param timestamp: the timestamp of the log line.
         """
         pass
+
+def serializable(f):
+    @wraps(f)
+    def wrapper(*args, mode:str, **kwargs):
+        if mode == ExecutionMode.ASYNC:
+            return f(*args, mode=mode, **kwargs)
+        return asyncio.run(f(*args, mode=mode, **kwargs))
+    return wrapper
