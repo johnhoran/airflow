@@ -902,6 +902,7 @@ class KubernetesPodOperator(BaseOperator):
                 last_log_time=last_log_time,
                 logging_interval=self.logging_interval,
                 trigger_kwargs=self.trigger_kwargs,
+                callbacks=self.callbacks,
             ),
             method_name="trigger_reentry",
         )

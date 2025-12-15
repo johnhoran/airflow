@@ -56,6 +56,7 @@ from airflow.utils.log.logging_mixin import LoggingMixin
 from airflow.utils.timezone import utcnow
 
 if TYPE_CHECKING:
+    import kubernetes_asyncio.client as async_k8s
     from kubernetes.client.models.core_v1_event import CoreV1Event
     from kubernetes.client.models.core_v1_event_list import CoreV1EventList
     from kubernetes.client.models.v1_container_state import V1ContainerState
@@ -992,7 +993,6 @@ class AsyncPodManager(LoggingMixin):
         """
         Create the launcher.
 
-        :param kube_client: kubernetes client
         :param callbacks:
         """
         super().__init__()
@@ -1090,6 +1090,7 @@ class AsyncPodManager(LoggingMixin):
                             if is_log_group_marker(message_to_log):
                                 print(message_to_log)
                             else:
+
                                 for callback in self._callbacks:
                                     callback.progress_callback(
                                         line=message_to_log, client=self._client, mode=ExecutionMode.ASYNC, container_name=container_name, timestamp=line_timestamp
@@ -1104,5 +1105,9 @@ class AsyncPodManager(LoggingMixin):
                 if is_log_group_marker(message_to_log):
                     print(message_to_log)
                 else:
+                    for callback in self._callbacks:
+                        callback.progress_callback(
+                            line=message_to_log, client=self._client, mode=ExecutionMode.ASYNC, container_name=container_name, timestamp=line_timestamp
+                        )
                     self.log.info("[%s] %s", container_name, message_to_log)
         return now  # Return the current time as the last log time to ensure logs from the current second are read in the next fetch.
