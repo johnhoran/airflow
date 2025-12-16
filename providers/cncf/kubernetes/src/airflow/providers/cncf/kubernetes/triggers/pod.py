@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import pickle
 import traceback
 from collections.abc import AsyncIterator
 from enum import Enum
@@ -102,7 +103,7 @@ class KubernetesPodTrigger(BaseTrigger):
         last_log_time: DateTime | None = None,
         logging_interval: int | None = None,
         trigger_kwargs: dict | None = None,
-        callbacks: list[type[KubernetesPodOperatorCallback]] = None,
+        callbacks: list[type[KubernetesPodOperatorCallback]] | str = None,
     ):
         super().__init__()
         self.pod_name = pod_name
@@ -124,7 +125,11 @@ class KubernetesPodTrigger(BaseTrigger):
         self.on_finish_action = OnFinishAction(on_finish_action)
         self.trigger_kwargs = trigger_kwargs or {}
         self._since_time = None
-        self._callbacks = callbacks or []
+
+        if isinstance(callbacks, str):
+            self._callbacks = pickle.loads(bytes.fromhex(callbacks))
+        else:
+            self._callbacks = callbacks or []
 
     def serialize(self) -> tuple[str, dict[str, Any]]:
         """Serialize KubernetesCreatePodTrigger arguments and classpath."""
@@ -149,7 +154,7 @@ class KubernetesPodTrigger(BaseTrigger):
                 "last_log_time": self.last_log_time,
                 "logging_interval": self.logging_interval,
                 "trigger_kwargs": self.trigger_kwargs,
-                "callbacks": self._callbacks,
+                "callbacks": pickle.dumps(self._callbacks).hex(),
             },
         )
 
