@@ -149,6 +149,7 @@ class KubernetesPodTrigger(BaseTrigger):
                 "last_log_time": self.last_log_time,
                 "logging_interval": self.logging_interval,
                 "trigger_kwargs": self.trigger_kwargs,
+                "callbacks": self._callbacks,
             },
         )
 
@@ -160,6 +161,8 @@ class KubernetesPodTrigger(BaseTrigger):
             self.pod_namespace,
             self.poll_interval,
         )
+
+        self.log.info("Callbacks to be used: %s", self._callbacks)
         try:
             state = await self._wait_for_pod_start()
             if state == ContainerState.TERMINATED:
