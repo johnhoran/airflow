@@ -42,7 +42,6 @@ if TYPE_CHECKING:
     from pendulum import DateTime
 
     from airflow.providers.cncf.kubernetes.callbacks import KubernetesPodOperatorCallback
-    from airflow.sdk.types import RuntimeTaskInstanceProtocol
 
 
 class ContainerState(str, Enum):
@@ -106,7 +105,6 @@ class KubernetesPodTrigger(BaseTrigger):
         logging_interval: int | None = None,
         trigger_kwargs: dict | None = None,
         callbacks: list[type[KubernetesPodOperatorCallback]] | str = None,
-        task_instance: RuntimeTaskInstanceProtocol | None = None,
     ):
         super().__init__()
         self.pod_name = pod_name
@@ -127,8 +125,6 @@ class KubernetesPodTrigger(BaseTrigger):
         self.logging_interval = logging_interval
         self.on_finish_action = OnFinishAction(on_finish_action)
         self.trigger_kwargs = trigger_kwargs or {}
-        self._since_time = None
-        self._task_instance = task_instance
 
         if isinstance(callbacks, str):
             self._callbacks = pickle.loads(bytes.fromhex(callbacks))
@@ -159,7 +155,6 @@ class KubernetesPodTrigger(BaseTrigger):
                 "logging_interval": self.logging_interval,
                 "trigger_kwargs": self.trigger_kwargs,
                 "callbacks": pickle.dumps(self._callbacks).hex(),
-                "task_instance": self._task_instance,
             },
         )
 
@@ -348,9 +343,7 @@ class KubernetesPodTrigger(BaseTrigger):
 
     @cached_property
     def pod_manager(self) -> AsyncPodManager:
-        return AsyncPodManager(
-            async_hook=self.hook, callbacks=self._callbacks, task_instance=self._task_instance
-        )
+        return AsyncPodManager(async_hook=self.hook, callbacks=self._callbacks)
 
     def define_container_state(self, pod: V1Pod) -> ContainerState:
         pod_containers = pod.status.container_statuses

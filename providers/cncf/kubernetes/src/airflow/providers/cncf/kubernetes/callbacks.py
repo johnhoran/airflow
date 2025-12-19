@@ -200,6 +200,7 @@ class KubernetesPodOperatorCallback:
         mode: str,
         container_name: str,
         timestamp: DateTime | None,
+        pod: k8s.V1Pod,
         **kwargs,
     ) -> None:
         """
