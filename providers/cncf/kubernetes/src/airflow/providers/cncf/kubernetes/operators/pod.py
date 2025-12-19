@@ -100,6 +100,8 @@ if TYPE_CHECKING:
     from airflow.providers.cncf.kubernetes.secret import Secret
     from airflow.sdk import Context
 
+    from airflow.sdk.types import RuntimeTaskInstanceProtocol as RuntimeTI
+
 alphanum_lower = string.ascii_lowercase + string.digits
 
 KUBE_CONFIG_ENV_VAR = "KUBECONFIG"
@@ -852,7 +854,7 @@ class KubernetesPodOperator(BaseOperator):
         ti.xcom_push(key="pod_name", value=self.pod.metadata.name)
         ti.xcom_push(key="pod_namespace", value=self.pod.metadata.namespace)
 
-        self.invoke_defer_method()
+        self.invoke_defer_method(task_instance=ti)
 
     def convert_config_file_to_dict(self):
         """Convert passed config_file to dict representation."""
@@ -863,7 +865,9 @@ class KubernetesPodOperator(BaseOperator):
         else:
             self._config_dict = None
 
-    def invoke_defer_method(self, last_log_time: DateTime | None = None) -> None:
+    def invoke_defer_method(
+        self, last_log_time: DateTime | None = None, task_instance: RuntimeTI | None = None
+    ) -> None:
         """Redefine triggers which are being used in child classes."""
         self.convert_config_file_to_dict()
 
@@ -903,6 +907,7 @@ class KubernetesPodOperator(BaseOperator):
                 logging_interval=self.logging_interval,
                 trigger_kwargs=self.trigger_kwargs,
                 callbacks=self.callbacks,
+                task_instance=task_instance,
             ),
             method_name="trigger_reentry",
         )

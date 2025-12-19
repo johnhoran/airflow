@@ -67,6 +67,7 @@ if TYPE_CHECKING:
     from urllib3.response import HTTPResponse
 
     from airflow.providers.cncf.kubernetes.hooks.kubernetes import AsyncKubernetesHook
+    from airflow.sdk.types import RuntimeTaskInstanceProtocol
 
 
 EMPTY_XCOM_RESULT = "__airflow_xcom_result_empty__"
@@ -989,6 +990,7 @@ class AsyncPodManager(LoggingMixin):
         self,
         async_hook: AsyncKubernetesHook,
         callbacks: list[type[KubernetesPodOperatorCallback]] | None = None,
+        task_instance: RuntimeTaskInstanceProtocol | None = None,
     ):
         """
         Create the launcher.
@@ -1000,6 +1002,7 @@ class AsyncPodManager(LoggingMixin):
         self._watch = watch.Watch()
         self._callbacks = callbacks or []
         self.stop_watching_events = False
+        self._task_instance = task_instance
 
     async def read_pod(self, pod: V1Pod) -> V1Pod:
         """Read POD information."""

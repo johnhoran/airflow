@@ -213,10 +213,12 @@ class KubernetesPodOperatorCallback:
         """
         pass
 
+
 def serializable(f):
     @wraps(f)
-    def wrapper(*args, mode:str, **kwargs):
+    def wrapper(*args, mode: str, **kwargs):
         if mode == ExecutionMode.ASYNC:
             return f(*args, mode=mode, **kwargs)
         return asyncio.run(f(*args, mode=mode, **kwargs))
+
     return wrapper
