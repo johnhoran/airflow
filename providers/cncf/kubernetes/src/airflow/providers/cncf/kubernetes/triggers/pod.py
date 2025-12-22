@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
-import pickle
+import importlib
 import traceback
 from collections.abc import AsyncIterator
 from enum import Enum
@@ -127,7 +127,10 @@ class KubernetesPodTrigger(BaseTrigger):
         self.trigger_kwargs = trigger_kwargs or {}
 
         if isinstance(callbacks, str):
-            self._callbacks = pickle.loads(bytes.fromhex(callbacks))
+            self._callbacks = [
+                getattr(importlib.import_module(x.rsplit(".")[0]), x.rsplit(".")[1])
+                for x in callbacks.split(",")
+            ]
         else:
             self._callbacks = callbacks or []
 
@@ -154,7 +157,12 @@ class KubernetesPodTrigger(BaseTrigger):
                 "last_log_time": self.last_log_time,
                 "logging_interval": self.logging_interval,
                 "trigger_kwargs": self.trigger_kwargs,
-                "callbacks": pickle.dumps(self._callbacks).hex(),
+                "callbacks": ",".join(
+                    [
+                        f"{x.__module__[56:] if x.__module__.startswith('unusual_prefix_') else x.__module__}.{x.__name__}"
+                        for x in self._callbacks
+                    ]
+                ),
             },
         )
 
