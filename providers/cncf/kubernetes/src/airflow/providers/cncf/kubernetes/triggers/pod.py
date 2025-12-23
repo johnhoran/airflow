@@ -128,7 +128,7 @@ class KubernetesPodTrigger(BaseTrigger):
 
         if isinstance(callbacks, str):
             self._callbacks = [
-                getattr(importlib.import_module(x.rsplit(".")[0]), x.rsplit(".")[1])
+                (lambda m, c: getattr(importlib.import_module(m), c))(*x.rsplit(".", 1))
                 for x in callbacks.split(",")
             ]
         else:
@@ -175,7 +175,6 @@ class KubernetesPodTrigger(BaseTrigger):
             self.poll_interval,
         )
 
-        self.log.info("Callbacks to be used: %s", self._callbacks)
         try:
             state = await self._wait_for_pod_start()
             if state == ContainerState.TERMINATED:
