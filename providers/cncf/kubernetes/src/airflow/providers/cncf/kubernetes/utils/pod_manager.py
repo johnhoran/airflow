@@ -29,7 +29,6 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import TYPE_CHECKING, Literal, cast
 
-import kubernetes_asyncio.client as async_k8s
 import pendulum
 from kubernetes import client, watch
 from kubernetes.client.rest import ApiException
@@ -1079,15 +1078,22 @@ class AsyncPodManager(LoggingMixin):
             since_seconds=(math.ceil((now - since_time).total_seconds()) if since_time else None),
         )
         message_to_log = None
-        async with self._hook.get_conn() as connection:
-            v1_api = async_k8s.CoreV1Api(connection)
-            try:
-                now_seconds = now.replace(microsecond=0)
-
-                                for callback in self._callbacks:
-                                    callback.progress_callback(
-                                        line=message_to_log, client=self._client, mode=ExecutionMode.ASYNC, container_name=container_name, timestamp=line_timestamp
-                                    )
+        try:
+            now_seconds = now.replace(microsecond=0)
+            for line in logs:
+                line_timestamp, message = parse_log_line(line)
+                # Skip log lines from the current second to prevent duplicate entries on the next read.
+                # The API only allows specifying 'since_seconds', not an exact timestamp.
+                if line_timestamp and line_timestamp.replace(microsecond=0) == now_seconds:
+                    break
+                if line_timestamp:  # detect new log line
+                    if message_to_log is None:  # first line in the log
+                        message_to_log = message
+                    else:  # previous log line is complete
+                        if message_to_log is not None:
+                            if is_log_group_marker(message_to_log):
+                                print(message_to_log)
+                            else:
                                 self.log.info("[%s] %s", container_name, message_to_log)
                         message_to_log = message
                 elif message_to_log:  # continuation of the previous log line
@@ -1098,9 +1104,5 @@ class AsyncPodManager(LoggingMixin):
                 if is_log_group_marker(message_to_log):
                     print(message_to_log)
                 else:
-                    for callback in self._callbacks:
-                        callback.progress_callback(
-                            line=message_to_log, client=self._client, mode=ExecutionMode.ASYNC, container_name=container_name, timestamp=line_timestamp
-                        )
                     self.log.info("[%s] %s", container_name, message_to_log)
         return now  # Return the current time as the last log time to ensure logs from the current second are read in the next fetch.
