@@ -1104,7 +1104,7 @@ class AsyncPodManager(LoggingMixin):
                                             mode=ExecutionMode.ASYNC,
                                             container_name=container_name,
                                             timestamp=line_timestamp,
-                                            task_instance=self._task_instance,
+                                            pod=pod,
                                         )
                                         if asyncio.iscoroutine(cb):
                                             await cb
